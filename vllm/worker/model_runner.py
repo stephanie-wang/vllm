@@ -599,62 +599,64 @@ class ModelRunner:
             num_decode_tokens=num_decode_tokens,
             num_prefills=num_prefills,
         )
-
-    def prepare_input_tensors(
+    def prepare_input_tensors_on_driver(
         self,
         seq_group_metadata_list: List[SequenceGroupMetadata],
     ) -> Tuple[torch.Tensor, torch.Tensor, AttentionMetadata, SamplingMetadata,
                Set[LoRARequest], LoRAMapping, torch.Tensor]:
-        if self.is_driver_worker:
-            # Prepare input tensors.
-            (
-                input_tokens,
-                input_positions,
-                attn_metadata,
-                seq_lens,
-                query_lens,
-                lora_mapping,
-                lora_requests,
-                multi_modal_input,
-                slot_mapping,
-                num_prefill_tokens,
-                num_decode_tokens,
-                num_prefills,
-            ) = self._prepare_model_input(seq_group_metadata_list)
-            sampling_metadata = SamplingMetadata.prepare(
-                seq_group_metadata_list, seq_lens, query_lens, self.device,
-                self.pin_memory)
+        # Prepare input tensors.
+        (
+            input_tokens,
+            input_positions,
+            attn_metadata,
+            seq_lens,
+            query_lens,
+            lora_mapping,
+            lora_requests,
+            multi_modal_input,
+            slot_mapping,
+            num_prefill_tokens,
+            num_decode_tokens,
+            num_prefills,
+        ) = self._prepare_model_input(seq_group_metadata_list)
+        sampling_metadata = SamplingMetadata.prepare(
+            seq_group_metadata_list, seq_lens, query_lens, self.device,
+            self.pin_memory)
 
-            metadata_dict = {
-                "input_tokens": input_tokens,
-                "input_positions": input_positions,
-                "selected_token_indices":
-                sampling_metadata.selected_token_indices,
-                "lora_requests": lora_requests,
-                "lora_mapping": lora_mapping,
-                "multi_modal_input": multi_modal_input,
-                "num_prefill_tokens": num_prefill_tokens,
-                "num_decode_tokens": num_decode_tokens,
-                "slot_mapping": slot_mapping,
-                "num_prefills": num_prefills,
-            }
-            if attn_metadata:
-                metadata_dict.update(attn_metadata.asdict_zerocopy())
-            broadcast_tensor_dict(metadata_dict, src=0)
+        metadata_dict = {
+            "input_tokens": input_tokens,
+            "input_positions": input_positions,
+            "selected_token_indices":
+            sampling_metadata.selected_token_indices,
+            "lora_requests": lora_requests,
+            "lora_mapping": lora_mapping,
+            "multi_modal_input": multi_modal_input,
+            "num_prefill_tokens": num_prefill_tokens,
+            "num_decode_tokens": num_decode_tokens,
+            "slot_mapping": slot_mapping,
+            "num_prefills": num_prefills,
+        }
+        if attn_metadata:
+            metadata_dict.update(attn_metadata.asdict_zerocopy())
+        return sampling_metadata, metadata_dict
+
+    def prepare_input_tensors_on_worker(self,
+            sampling_metadata: Optional[SamplingMetadata],
+            metadata_dict):
+        input_tokens = metadata_dict.pop("input_tokens")
+        input_positions = metadata_dict.pop("input_positions")
+        selected_token_indices = metadata_dict.pop(
+            "selected_token_indices")
+        lora_mapping = metadata_dict.pop("lora_mapping")
+        lora_requests = metadata_dict.pop("lora_requests")
+        multi_modal_input = metadata_dict.pop("multi_modal_input")
+        if metadata_dict:
+            attn_metadata = self.attn_backend.make_metadata(
+                **metadata_dict)
         else:
-            metadata_dict = broadcast_tensor_dict(src=0)
-            input_tokens = metadata_dict.pop("input_tokens")
-            input_positions = metadata_dict.pop("input_positions")
-            selected_token_indices = metadata_dict.pop(
-                "selected_token_indices")
-            lora_mapping = metadata_dict.pop("lora_mapping")
-            lora_requests = metadata_dict.pop("lora_requests")
-            multi_modal_input = metadata_dict.pop("multi_modal_input")
-            if metadata_dict:
-                attn_metadata = self.attn_backend.make_metadata(
-                    **metadata_dict)
-            else:
-                attn_metadata = None
+            attn_metadata = None
+
+        if sampling_metadata is None:
             sampling_metadata = SamplingMetadata(
                 seq_groups=None,
                 selected_token_indices=selected_token_indices,
@@ -665,6 +667,23 @@ class ModelRunner:
         return (input_tokens, input_positions, attn_metadata,
                 sampling_metadata, lora_requests, lora_mapping,
                 multi_modal_input)
+
+
+    def prepare_input_tensors(
+        self,
+        seq_group_metadata_list: List[SequenceGroupMetadata],
+    ) -> Tuple[torch.Tensor, torch.Tensor, AttentionMetadata, SamplingMetadata,
+               Set[LoRARequest], LoRAMapping, torch.Tensor]:
+        sampling_metadata = None
+        if self.is_driver_worker:
+            sampling_metadata, metadata_dict = self.prepare_input_tensors_on_driver(seq_group_metadata_list)
+            broadcast_tensor_dict(metadata_dict, src=0)
+        else:
+            metadata_dict = broadcast_tensor_dict(src=0)
+
+        return self.prepare_input_tensors_on_worker(
+                sampling_metadata,
+                metadata_dict)
 
     @torch.inference_mode()
     def execute_model(
