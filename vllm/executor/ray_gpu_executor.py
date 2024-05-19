@@ -205,6 +205,9 @@ class RayGPUExecutor(DistributedGPUExecutor):
         - all_args/all_kwargs: args/kwargs for each worker are specified
           individually
         """
+        if not use_ray_compiled_dag and USE_RAY_COMPILED_DAG_WITH_BROADCAST:
+            # Worker setup. Include the driver worker in all commands.
+            use_dummy_driver = True
 
         if max_concurrent_workers:
             raise NotImplementedError(
@@ -221,14 +224,14 @@ class RayGPUExecutor(DistributedGPUExecutor):
         all_worker_kwargs = repeat(kwargs, count) if all_kwargs is None \
             else islice(all_kwargs, 1, None)
 
-        if USE_RAY_COMPILED_DAG_WITH_BROADCAST:
+        if use_ray_compiled_dag:
             assert self.forward_dag is not None
-            output_channels = self.forward_dag.execute(**driver_kwargs)
-        elif use_ray_compiled_dag:
-            # Right now, compiled DAG can only accept a single
-            # input. TODO(sang): Fix it.
-            assert self.forward_dag is not None
-            output_channels = self.forward_dag.execute(1)
+            if USE_RAY_COMPILED_DAG_WITH_BROADCAST:
+                output_channels = self.forward_dag.execute(driver_kwargs.pop("execute_model_req"))
+            else:
+                # Right now, compiled DAG can only accept a single
+                # input. TODO(sang): Fix it.
+                output_channels = self.forward_dag.execute(1)
         else:
             # Start the ray workers first.
             ray_worker_outputs = [
@@ -239,7 +242,7 @@ class RayGPUExecutor(DistributedGPUExecutor):
             ]
 
         driver_worker_output = []
-        if not USE_RAY_COMPILED_DAG_WITH_BROADCAST:
+        if not (use_ray_compiled_dag and USE_RAY_COMPILED_DAG_WITH_BROADCAST):
             # Start the driver worker after all the ray workers.
             if not use_dummy_driver:
                 driver_worker_output.append(self.driver_worker.execute_method(
@@ -275,9 +278,6 @@ class RayGPUExecutor(DistributedGPUExecutor):
         assert self.parallel_config.distributed_executor_backend == "ray"
 
         if use_broadcast:
-            # Right now, compiled DAG requires at least 1 arg. We send
-            # a dummy value for now. It will be fixed soon.
-            driver_worker = self.workers[0]
             with InputNode() as input_data:
                 from ray.experimental.channel.torch_tensor_type import TorchTensorType
                 forward_dag = self.driver_dummy_worker.prepare_execute_model_args_compiled_dag_remote.bind(input_data)
