@@ -691,10 +691,16 @@ class ModelRunner:
         seq_group_metadata_list: List[SequenceGroupMetadata],
         kv_caches: List[torch.Tensor],
     ) -> Optional[SamplerOutput]:
-        (input_tokens, input_positions, attn_metadata, sampling_metadata,
-         lora_requests, lora_mapping, multi_modal_input
-         ) = self.prepare_input_tensors(seq_group_metadata_list)
+        args = self.prepare_input_tensors(seq_group_metadata_list)
+        return self._execute_model(kv_caches, *args)
 
+    @torch.inference_mode()
+    def _execute_model(
+        self,
+        kv_caches: List[torch.Tensor],
+        input_tokens, input_positions, attn_metadata, sampling_metadata,
+        lora_requests, lora_mapping, multi_modal_input,
+    ) -> Optional[SamplerOutput]:
         if self.lora_config:
             self.set_active_loras(lora_requests, lora_mapping)
 

@@ -257,13 +257,17 @@ class Worker(WorkerBase):
             "blocks_to_swap_out": blocks_to_swap_out,
             "blocks_to_copy": blocks_to_copy,
         }
-        return data
+
+        sampling_metadata, metadata_dict = self.model_runner.prepare_input_tensors_on_driver(seq_group_metadata_list)
+
+        return data, sampling_metadata, metadata_dict
 
     @torch.inference_mode()
     def execute_model_with_prepared_args(
         self,
-        seq_group_metadata_list,
         data: Dict[str, Any],
+        sampling_metadata: Optional["SamplingMetadata"],
+        metadata_dict,
     ) -> List[Union[SamplerOutput, PoolerOutput]]:
         blocks_to_swap_in: torch.Tensor
         blocks_to_swap_out: torch.Tensor
@@ -280,8 +284,9 @@ class Worker(WorkerBase):
         if num_seq_groups == 0:
             return []
 
-        output = self.model_runner.execute_model(seq_group_metadata_list,
-                                                 self.gpu_cache)
+        args = self.model_runner.prepare_input_tensors_on_worker(sampling_metadata, metadata_dict)
+
+        output = self.model_runner._execute_model(self.gpu_cache, *args)
 
         # Worker only supports single-step execution. Wrap the output in a list
         # to conform to interface.
@@ -298,17 +303,22 @@ class Worker(WorkerBase):
         else:
             seq_group_metadata_list = execute_model_req.seq_group_metadata_list
 
+        sampling_metadata = None
         if self.is_driver_worker:
             assert seq_group_metadata_list is not None
             assert execute_model_req is not None
-            data = self.prepare_execute_model_args(execute_model_req)
+            data, sampling_metadata, metadata_dict = self.prepare_execute_model_args(execute_model_req)
             broadcast_tensor_dict(data, src=0)
+            broadcast_tensor_dict(metadata_dict, src=0)
+
         else:
             data = broadcast_tensor_dict(src=0)
+            metadata_dict = broadcast_tensor_dict(src=0)
 
         return self.execute_model_with_prepared_args(
-                seq_group_metadata_list,
-                data)
+                data,
+                sampling_metadata,
+                metadata_dict)
 
     def add_lora(self, lora_request: LoRARequest) -> bool:
         return self.model_runner.add_lora(lora_request)
