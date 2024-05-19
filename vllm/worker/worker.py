@@ -298,14 +298,8 @@ class Worker(WorkerBase):
         execute_model_req: Optional[ExecuteModelRequest] = None
     ) -> List[Union[SamplerOutput, PoolerOutput]]:
 
-        if execute_model_req is None:
-            seq_group_metadata_list = None
-        else:
-            seq_group_metadata_list = execute_model_req.seq_group_metadata_list
-
         sampling_metadata = None
         if self.is_driver_worker:
-            assert seq_group_metadata_list is not None
             assert execute_model_req is not None
             data, sampling_metadata, metadata_dict = self.prepare_execute_model_args(execute_model_req)
             broadcast_tensor_dict(data, src=0)

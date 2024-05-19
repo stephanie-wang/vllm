@@ -38,9 +38,24 @@ try:
                 torch.cuda.set_device(self.worker.device)
                 self.compiled_dag_cuda_device_set = True
 
-            output = self.worker.execute_model()
-            output = pickle.dumps(output)
-            return output
+            return self.worker.execute_model()
+
+        def prepare_execute_model_args_compiled_dag_remote(self, execute_model_req):
+            import torch
+            if not self.compiled_dag_cuda_device_set:
+                torch.cuda.set_device(self.worker.device)
+                self.compiled_dag_cuda_device_set = True
+
+            return self.worker.prepare_execute_model_args(execute_model_req)
+
+        def execute_model_with_prepared_args_compiled_dag_remote(self, prepared_args):
+            import torch
+            if not self.compiled_dag_cuda_device_set:
+                torch.cuda.set_device(self.worker.device)
+                self.compiled_dag_cuda_device_set = True
+
+            return self.worker.execute_model_with_prepared_args(*prepared_args)
+
 
 except ImportError as e:
     logger.warning(
