@@ -248,13 +248,11 @@ class RayGPUExecutor(DistributedGPUExecutor):
             if use_ray_compiled_dag:
                 try:
                     ray_worker_outputs = [
-                        pickle.loads(chan.begin_read())
-                        for chan in output_channels
+                        pickle.loads(result) for result in output_channels.begin_read()
                     ]
                 finally:
                     # Has to call end_read in order to reuse the DAG.
-                    for chan in output_channels:
-                        chan.end_read()
+                    output_channels.end_read()
             else:
                 ray_worker_outputs = ray.get(ray_worker_outputs)
 
