@@ -89,7 +89,11 @@ class Worker(WorkerBase):
         # Initialize gpu_cache as embedding models don't initialize kv_caches
         self.gpu_cache: Optional[List[torch.tensor]] = None
 
-    def init_device(self) -> None:
+    def init_device(self, device_str=None) -> None:
+        if device_str is not None:
+            self.device = torch.device("cpu")
+            return
+
         if self.device_config.device.type == "cuda":
             # torch.distributed.all_reduce does not free the input tensor until
             # the synchronization point. This causes the memory usage to grow
