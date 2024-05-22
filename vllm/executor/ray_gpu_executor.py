@@ -319,7 +319,6 @@ class RayGPUExecutorAsync(RayGPUExecutor, DistributedGPUExecutorAsync):
                              f"required, but found {current_version}")
 
         from ray.dag import InputNode, MultiOutputNode
-        assert self.parallel_config.worker_use_ray
         assert self.parallel_config.tensor_parallel_size == 1
 
         # Right now, compiled DAG requires at least 1 arg. We send

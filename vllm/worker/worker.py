@@ -13,6 +13,7 @@ from vllm.distributed import (broadcast_tensor_dict,
                               ensure_model_parallel_initialized,
                               get_tp_src_rank_and_group,
                               get_local_rank,
+                              is_pipeline_model_parallel_last_rank,
                               init_distributed_environment,
                               set_custom_all_reduce)
 from vllm.lora.request import LoRARequest
@@ -305,9 +306,12 @@ class Worker(WorkerBase):
             seq_group_metadata_list, self.gpu_cache[virtual_engine],
             virtual_engine)
 
-        # Worker only supports single-step execution. Wrap the output in a list
-        # to conform to interface.
-        return [output]
+        if is_pipeline_model_parallel_last_rank():
+            # Worker only supports single-step execution. Wrap the output in a list
+            # to conform to interface.
+            return [output]
+
+        return (execute_model_req, )
 
     def add_lora(self, lora_request: LoRARequest) -> bool:
         return self.model_runner.add_lora(lora_request)
