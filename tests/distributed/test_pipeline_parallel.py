@@ -15,11 +15,13 @@ import requests
 MAX_SERVER_START_WAIT_S = 600  # wait for server to start for 60 seconds
 # any model with a chat template should work here
 MODEL_NAME = "meta-llama/Meta-Llama-3-8B"
+EAGER_MODE = os.getenv("EAGER_MODE", None)
+CHUNKED_PREFILL = os.getenv("CHUNKED_PREFILL", None)
 
 pytestmark = pytest.mark.asyncio
 
 
-@ray.remote(num_gpus=1)
+@ray.remote(num_gpus=4)
 class ServerRunner:
 
     def __init__(self, args):
@@ -61,17 +63,21 @@ class ServerRunner:
 @pytest.fixture(scope="session")
 def server():
     ray.init()
-    server_runner = ServerRunner.remote([
+    args = [
         "--model",
         MODEL_NAME,
         # use half precision for speed and memory savings in CI environment
         "--dtype",
         "bfloat16",
-        "--enforce-eager",
-        "--enable-chunked-prefill"
+        "--enforce-eager" if EAGER_MODE else None,
+        "--enable-chunked-prefill" if CHUNKED_PREFILL else None,
         "--pipeline-parallel-size",
         "2",
-    ])
+        "--tensor-parallel-size",
+        "2",
+    ]
+    server_runner = ServerRunner.remote(
+        [arg for arg in args if arg is not None])
     ray.get(server_runner.ready.remote())
     yield server_runner
     ray.shutdown()
