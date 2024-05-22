@@ -191,7 +191,7 @@ class RayGPUExecutor(DistributedGPUExecutor):
         driver_kwargs: Optional[Dict[str, Any]] = None,
         all_args: Optional[List[Tuple[Any, ...]]] = None,
         all_kwargs: Optional[List[Dict[str, Any]]] = None,
-        use_dummy_driver: bool = False,
+        use_dummy_driver: bool = True,
         max_concurrent_workers: Optional[int] = None,
         use_ray_compiled_dag: bool = False,
         **kwargs,
@@ -304,7 +304,32 @@ class RayGPUExecutorAsync(RayGPUExecutor, DistributedGPUExecutorAsync):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.driver_executor = make_async(self.driver_worker.execute_method)
+        #self.driver_executor = make_async(self.driver_worker.execute_method)
+        self.driver_executor = self.driver_dummy_worker.execute_method.remote
+
+    def _compiled_ray_dag(self):
+        return None
+
+    def _build_compiled_ray_dag(self):
+        import pkg_resources
+        required_version = "2.9"
+        current_version = pkg_resources.get_distribution("ray").version
+        if current_version < required_version:
+            raise ValueError(f"Ray version {required_version} or greater is "
+                             f"required, but found {current_version}")
+
+        from ray.dag import InputNode, MultiOutputNode
+        assert self.parallel_config.worker_use_ray
+        assert self.parallel_config.tensor_parallel_size == 1
+
+        # Right now, compiled DAG requires at least 1 arg. We send
+        # a dummy value for now. It will be fixed soon.
+        with InputNode() as input_data:
+            forward_dag = input_data
+            for worker in [self.driver_dummy_worker] + self.workers:
+                forward_dag = worker.execute_model_compiled_dag_pipelined_remote.bind(forward_dag)
+
+        return forward_dag.experimental_compile(enable_asyncio=True)
 
     async def _run_workers_async(
         self,
@@ -312,6 +337,7 @@ class RayGPUExecutorAsync(RayGPUExecutor, DistributedGPUExecutorAsync):
         *args,
         driver_args: Optional[Tuple[Any, ...]] = None,
         driver_kwargs: Optional[Dict[str, Any]] = None,
+        use_ray_compiled_dag: bool = False,
         **kwargs,
     ) -> Any:
         """Runs the given method on all workers."""
@@ -321,6 +347,11 @@ class RayGPUExecutorAsync(RayGPUExecutor, DistributedGPUExecutorAsync):
             driver_kwargs = kwargs
 
         # Run the ray workers asynchronously.
+
+        if use_ray_compiled_dag:
+            if self.forward_dag is None:
+                self.forward_dag = self._build_compiled_ray_dag()
+            return [await self.forward_dag.execute_async(driver_args)]
 
         for pp_rank in range(self.parallel_config.pipeline_parallel_size):
             coros = []

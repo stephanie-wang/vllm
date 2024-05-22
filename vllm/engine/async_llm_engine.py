@@ -230,9 +230,18 @@ class _AsyncLLMEngine(LLMEngine):
         else:
             output = []
 
-        request_outputs = self._process_model_outputs(
-            output, scheduler_outputs.scheduled_seq_groups,
-            scheduler_outputs.ignored_seq_groups, seq_group_metadata_list)
+        from ray.dag.compiled_dag_node import AwaitableDAGOutput
+        if output and isinstance(output, AwaitableDAGOutput):
+            async with output as step_output:
+                if isinstance(step_output, Exception):
+                    raise step_output
+                request_outputs = self._process_model_outputs(
+                    [step_output], scheduler_outputs.scheduled_seq_groups,
+                    scheduler_outputs.ignored_seq_groups, seq_group_metadata_list)
+        else:
+            request_outputs = self._process_model_outputs(
+                output, scheduler_outputs.scheduled_seq_groups,
+                scheduler_outputs.ignored_seq_groups, seq_group_metadata_list)
 
         # Log stats.
         self.do_log_stats(scheduler_outputs, output)
@@ -569,11 +578,11 @@ class AsyncLLMEngine:
                 if shortened_token_ids is not None:
                     shortened_token_ids = shortened_token_ids[:self.
                                                               max_log_len]
-            logger.info(
-                "Received request %s: prompt: %r, "
-                "params: %s, prompt_token_ids: %s, "
-                "lora_request: %s.", request_id, shortened_prompt, params,
-                shortened_token_ids, lora_request)
+            #logger.info(
+            #    "Received request %s: prompt: %r, "
+            #    "sampling_params: %s, prompt_token_ids: %s, "
+            #    "lora_request: %s.", request_id, shortened_prompt,
+            #    sampling_params, shortened_token_ids, lora_request)
 
         if not self.is_running:
             if self.start_engine_loop:

@@ -42,6 +42,17 @@ try:
             output = pickle.dumps(output)
             return output
 
+        def execute_model_compiled_dag_pipelined_remote(self, args):
+            """Used only when compiled DAG is enabled."""
+            import torch
+            if not self.compiled_dag_cuda_device_set:
+                torch.cuda.set_device(self.worker.device)
+                self.compiled_dag_cuda_device_set = True
+
+            print("ARGS", self.worker.rank, args)
+            output = self.worker.execute_model(*args)
+            return output
+
 except ImportError as e:
     logger.warning(
         "Failed to import Ray with %r. For multi-node inference, "
