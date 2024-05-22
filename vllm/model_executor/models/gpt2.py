@@ -25,13 +25,13 @@ from transformers import GPT2Config
 
 from vllm.attention import Attention, AttentionMetadata
 from vllm.config import CacheConfig
-from vllm.distributed import (get_pipeline_model_parallel_rank,
-                              get_pipeline_model_parallel_world_size,
-                              get_pp_indices,
-                              get_tensor_model_parallel_world_size,
-                              is_pipeline_model_parallel_first_rank,
-                              is_pipeline_model_parallel_last_rank,
-                              recv_prev_rank, send_next_rank)
+from vllm.distributed.communication_op import recv_prev_rank, send_next_rank
+from vllm.distributed.parallel_state import (
+    get_pipeline_model_parallel_rank, get_pipeline_model_parallel_world_size,
+    get_tensor_model_parallel_world_size,
+    is_pipeline_model_parallel_first_rank,
+    is_pipeline_model_parallel_last_rank)
+from vllm.distributed.utils import get_pp_indices
 from vllm.model_executor.layers.activation import get_act_fn
 from vllm.model_executor.layers.linear import (ColumnParallelLinear,
                                                QKVParallelLinear,

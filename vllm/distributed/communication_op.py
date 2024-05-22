@@ -7,6 +7,7 @@ import torch
 import torch.distributed
 from torch.distributed import ProcessGroup
 
+# yapf: disable
 from .parallel_state import (get_cpu_world_group,
                              get_pipeline_model_parallel_group,
                              get_pipeline_model_parallel_next_rank,
@@ -15,6 +16,8 @@ from .parallel_state import (get_cpu_world_group,
                              get_tensor_model_parallel_world_size,
                              get_tp_ca_communicator,
                              get_tp_pynccl_communicator)
+
+# yapf: enable
 
 
 @dataclass
@@ -325,8 +328,8 @@ def send_next_rank(tensors: List[torch.Tensor]) -> None:
 
 def recv_prev_rank(num_tensors: int, sizes: torch.Size, dtype: torch.dtype,
                    device: torch.device) -> List[torch.Tensor]:
-    sizes = list(sizes)
     """Receive tensors from the previous pipeline model parallel rank."""
+    sizes = list(sizes)
     combined_tensor = torch.empty([sizes[0] * num_tensors] + sizes[1:],
                                   dtype=dtype,
                                   device=device)
