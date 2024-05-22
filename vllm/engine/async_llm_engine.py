@@ -232,11 +232,11 @@ class _AsyncLLMEngine(LLMEngine):
 
         from ray.dag.compiled_dag_node import AwaitableDAGOutput
         if output and isinstance(output, AwaitableDAGOutput):
-            async with output as step_output:
-                if isinstance(step_output, Exception):
-                    raise step_output
+            async with output as output:
+                if isinstance(output, Exception):
+                    raise output
                 request_outputs = self._process_model_outputs(
-                    [step_output], scheduler_outputs.scheduled_seq_groups,
+                    output, scheduler_outputs.scheduled_seq_groups,
                     scheduler_outputs.ignored_seq_groups, seq_group_metadata_list)
         else:
             request_outputs = self._process_model_outputs(

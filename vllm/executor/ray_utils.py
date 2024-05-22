@@ -49,7 +49,6 @@ try:
                 torch.cuda.set_device(self.worker.device)
                 self.compiled_dag_cuda_device_set = True
 
-            print("ARGS", self.worker.rank, args)
             output = self.worker.execute_model(*args)
             return output
 

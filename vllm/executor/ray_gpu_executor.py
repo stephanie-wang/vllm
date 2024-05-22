@@ -191,7 +191,7 @@ class RayGPUExecutor(DistributedGPUExecutor):
         driver_kwargs: Optional[Dict[str, Any]] = None,
         all_args: Optional[List[Tuple[Any, ...]]] = None,
         all_kwargs: Optional[List[Dict[str, Any]]] = None,
-        use_dummy_driver: bool = True,
+        use_dummy_driver: bool = False,
         max_concurrent_workers: Optional[int] = None,
         use_ray_compiled_dag: bool = False,
         **kwargs,
@@ -236,6 +236,8 @@ class RayGPUExecutor(DistributedGPUExecutor):
             ]
 
         # Start the driver worker after all the ray workers.
+        if USE_RAY_COMPILED_DAG:
+            use_dummy_driver = True
         if not use_dummy_driver:
             driver_worker_output = self.driver_worker.execute_method(
                 method, *driver_args, **driver_kwargs)
@@ -304,8 +306,10 @@ class RayGPUExecutorAsync(RayGPUExecutor, DistributedGPUExecutorAsync):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        #self.driver_executor = make_async(self.driver_worker.execute_method)
-        self.driver_executor = self.driver_dummy_worker.execute_method.remote
+        if USE_RAY_COMPILED_DAG:
+            self.driver_executor = self.driver_dummy_worker.execute_method.remote
+        else:
+            self.driver_executor = make_async(self.driver_worker.execute_method)
 
     def _compiled_ray_dag(self):
         return None

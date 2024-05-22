@@ -307,10 +307,13 @@ class Worker(WorkerBase):
             virtual_engine)
 
         if is_pipeline_model_parallel_last_rank():
+            # This is the last rank, return the actual result.
             # Worker only supports single-step execution. Wrap the output in a list
             # to conform to interface.
             return [output]
 
+        # If we are not the last rank, return the request metadata
+        # for the next rank to execute.
         return (execute_model_req, )
 
     def add_lora(self, lora_request: LoRARequest) -> bool:
