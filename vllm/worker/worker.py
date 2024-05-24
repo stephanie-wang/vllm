@@ -12,6 +12,8 @@ from vllm.config import (CacheConfig, DeviceConfig, LoadConfig, LoRAConfig,
 from vllm.distributed import (broadcast_tensor_dict,
                               ensure_model_parallel_initialized,
                               get_tp_src_rank_and_group,
+                              get_local_rank,
+                              is_pipeline_model_parallel_last_rank,
                               init_distributed_environment,
                               set_custom_all_reduce)
 from vllm.lora.request import LoRARequest
@@ -48,6 +50,7 @@ class Worker(WorkerBase):
         is_driver_worker: bool = False,
     ) -> None:
         self.model_config = model_config
+        self.model_config.dtype = torch.float16
         self.parallel_config = parallel_config
         self.scheduler_config = scheduler_config
         self.device_config = device_config
@@ -252,7 +255,7 @@ class Worker(WorkerBase):
 
         src_rank, tp_group, cpu_tp_group = get_tp_src_rank_and_group()
         if self.is_driver_worker:
-            assert seq_group_metadata_list is not None
+            assert seq_group_metadata_list is not None, (src_rank, tp_group)
             assert execute_model_req is not None
             num_seq_groups = len(seq_group_metadata_list)
             # `blocks_to_swap_in` and `blocks_to_swap_out` are cpu tensors.
@@ -303,9 +306,15 @@ class Worker(WorkerBase):
             seq_group_metadata_list, self.gpu_cache[virtual_engine],
             virtual_engine)
 
-        # Worker only supports single-step execution. Wrap the output in a list
-        # to conform to interface.
-        return [output]
+        if is_pipeline_model_parallel_last_rank():
+            # This is the last rank, return the actual result.
+            # Worker only supports single-step execution. Wrap the output in a list
+            # to conform to interface.
+            return [output]
+
+        # If we are not the last rank, return the request metadata
+        # for the next rank to execute.
+        return (execute_model_req, )
 
     def add_lora(self, lora_request: LoRARequest) -> bool:
         return self.model_runner.add_lora(lora_request)

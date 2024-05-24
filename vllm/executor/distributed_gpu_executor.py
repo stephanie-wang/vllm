@@ -1,6 +1,7 @@
 from abc import abstractmethod
 from functools import reduce
 from typing import Any, Dict, List, Optional, Set, Tuple
+import os
 
 from vllm.executor.executor_base import ExecutorAsyncBase
 from vllm.executor.gpu_executor import GPUExecutor
@@ -10,6 +11,11 @@ from vllm.sequence import SamplerOutput
 
 logger = init_logger(__name__)
 
+
+# If the env var is set, it uses the Ray's compiled DAG API
+# which optimizes the control plane overhead.
+# Run vLLM with VLLM_USE_RAY_COMPILED_DAG=1 to enable it.
+USE_RAY_COMPILED_DAG = bool(os.getenv("VLLM_USE_RAY_COMPILED_DAG", 0))
 
 class DistributedGPUExecutor(GPUExecutor):
     """Abstract superclass of multi-GPU executor implementations."""
@@ -121,7 +127,8 @@ class DistributedGPUExecutorAsync(DistributedGPUExecutor, ExecutorAsyncBase):
                                   **kwargs) -> List[SamplerOutput]:
         all_outputs = await self._run_workers_async("execute_model",
                                                     driver_args=args,
-                                                    driver_kwargs=kwargs)
+                                                    driver_kwargs=kwargs,
+                                                    use_ray_compiled_dag=USE_RAY_COMPILED_DAG)
 
         # Only the first tensor parallel worker on the last pipeline parallel
         # rank returns the output
