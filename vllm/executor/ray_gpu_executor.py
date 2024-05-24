@@ -325,8 +325,6 @@ class RayGPUExecutorAsync(RayGPUExecutor, DistributedGPUExecutorAsync):
         from ray.dag import InputNode, MultiOutputNode
         assert self.parallel_config.tensor_parallel_size == 1
 
-        # Right now, compiled DAG requires at least 1 arg. We send
-        # a dummy value for now. It will be fixed soon.
         with InputNode() as input_data:
             forward_dag = input_data
             for worker in [self.driver_dummy_worker] + self.workers:
