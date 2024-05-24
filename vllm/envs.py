@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     VLLM_ATTENTION_BACKEND: Optional[str] = None
     VLLM_CPU_KVCACHE_SPACE: int = 0
     VLLM_USE_RAY_COMPILED_DAG: bool = False
-    VLLM_USE_RAY_COMPILED_DAG_WITH_BROADCAST: bool = False
+    VLLM_USE_RAY_COMPILED_DAG_FOR_SPMD: bool = False
     VLLM_WORKER_MULTIPROC_METHOD: str = "spawn"
     VLLM_TARGET_DEVICE: str = "cuda"
     MAX_JOBS: Optional[str] = None
@@ -197,8 +197,8 @@ environment_variables: Dict[str, Callable[[], Any]] = {
     # Run vLLM with VLLM_USE_RAY_COMPILED_DAG=1 to enable it.
     "VLLM_USE_RAY_COMPILED_DAG":
     lambda: bool(os.getenv("VLLM_USE_RAY_COMPILED_DAG", 0)),
-    "VLLM_USE_RAY_COMPILED_DAG_WITH_BROADCAST":
-    lambda: bool(os.getenv("VLLM_USE_RAY_COMPILED_DAG_WITH_BROADCAST", 0)),
+    "VLLM_USE_RAY_COMPILED_DAG_FOR_SPMD":
+    lambda: bool(os.getenv("VLLM_USE_RAY_COMPILED_DAG_FOR_SPMD", 0)),
 
     # Use dedicated multiprocess context for workers.
     # Both spawn and fork work
