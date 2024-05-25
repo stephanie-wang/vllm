@@ -23,6 +23,8 @@ if TYPE_CHECKING:
 logger = init_logger(__name__)
 
 USE_RAY_COMPILED_DAG = envs.VLLM_USE_RAY_COMPILED_DAG
+# The driver dummy worker participates as an equal worker in the DAG.
+USE_RAY_COMPILED_DAG_FOR_SPMD = envs.VLLM_USE_RAY_COMPILED_DAG_FOR_SPMD
 
 
 class RayGPUExecutor(DistributedGPUExecutor):
@@ -41,7 +43,7 @@ class RayGPUExecutor(DistributedGPUExecutor):
 
         self.forward_dag = None
         if USE_RAY_COMPILED_DAG:
-            self.forward_dag = self._compiled_ray_dag()
+            self.forward_dag = self._compiled_ray_dag(USE_RAY_COMPILED_DAG_FOR_SPMD)
 
     def _configure_ray_workers_use_nsight(self,
                                           ray_remote_kwargs) -> Dict[str, Any]:
@@ -129,7 +131,8 @@ class RayGPUExecutor(DistributedGPUExecutor):
 
         # Get the set of GPU IDs used on each node.
         worker_node_and_gpu_ids = self._run_workers("get_node_and_gpu_ids",
-                                                    use_dummy_driver=True)
+                use_dummy_driver=True,
+                use_local_driver=False)
 
         node_workers = defaultdict(list)
         node_gpus = defaultdict(list)
@@ -168,6 +171,13 @@ class RayGPUExecutor(DistributedGPUExecutor):
         self._run_workers("init_worker", all_kwargs=init_worker_all_kwargs)
 
         self._run_workers("init_device")
+
+        if USE_RAY_COMPILED_DAG_FOR_SPMD:
+            self.driver_worker.execute_method(
+                "init_worker", **init_worker_all_kwargs[0])
+            self.driver_worker.execute_method(
+                "init_device", "cpu")
+
         self._run_workers("load_model",
                           max_concurrent_workers=self.parallel_config.
                           max_parallel_loading_workers)
@@ -192,6 +202,7 @@ class RayGPUExecutor(DistributedGPUExecutor):
         all_args: Optional[List[Tuple[Any, ...]]] = None,
         all_kwargs: Optional[List[Dict[str, Any]]] = None,
         use_dummy_driver: bool = False,
+        use_local_driver: bool = True,
         max_concurrent_workers: Optional[int] = None,
         use_ray_compiled_dag: bool = False,
         **kwargs,
@@ -205,6 +216,19 @@ class RayGPUExecutor(DistributedGPUExecutor):
         - all_args/all_kwargs: args/kwargs for each worker are specified
           individually
         """
+        if use_ray_compiled_dag:
+            if USE_RAY_COMPILED_DAG_FOR_SPMD:
+                # Ray DAG already includes the task for the dummy driver
+                # worker.
+                use_dummy_driver = False
+                # The physical driver does not participate either.
+                use_local_driver = False
+        elif USE_RAY_COMPILED_DAG_FOR_SPMD:
+            # Worker setup: Whatever is normally executed on the local driver
+            # should instead be executed on the "dummy" driver worker.
+            if use_local_driver:
+                use_dummy_driver = use_local_driver
+            use_local_driver = False
 
         if max_concurrent_workers:
             raise NotImplementedError(
@@ -222,10 +246,13 @@ class RayGPUExecutor(DistributedGPUExecutor):
             else islice(all_kwargs, 1, None)
 
         if use_ray_compiled_dag:
-            # Right now, compiled DAG can only accept a single
-            # input. TODO(sang): Fix it.
             assert self.forward_dag is not None
-            output_channels = self.forward_dag.execute(1)
+            if USE_RAY_COMPILED_DAG_FOR_SPMD:
+                output_channels = self.forward_dag.execute(driver_kwargs.pop("execute_model_req"))
+            else:
+                # Right now, compiled DAG can only accept a single
+                # input. TODO(sang): Fix it.
+                output_channels = self.forward_dag.execute(1)
         else:
             # Start the ray workers first.
             ray_worker_outputs = [
@@ -235,35 +262,31 @@ class RayGPUExecutor(DistributedGPUExecutor):
                      ) in zip(self.workers, all_worker_args, all_worker_kwargs)
             ]
 
+        driver_worker_output = []
         # Start the driver worker after all the ray workers.
-        if USE_RAY_COMPILED_DAG:
-            use_dummy_driver = True
-        if not use_dummy_driver:
-            driver_worker_output = self.driver_worker.execute_method(
-                method, *driver_args, **driver_kwargs)
-        else:
+        if use_dummy_driver:
             assert self.driver_dummy_worker is not None
-            driver_worker_output = ray.get(
+            driver_worker_output.append(ray.get(
                 self.driver_dummy_worker.execute_method.remote(
-                    method, *driver_args, **driver_kwargs))
+                    method, *driver_args, **driver_kwargs)))
+        if use_local_driver:
+            driver_worker_output.append(self.driver_worker.execute_method(
+                method, *driver_args, **driver_kwargs))
+
         # Get the results of the ray workers.
         if self.workers:
             if use_ray_compiled_dag:
                 try:
-                    ray_worker_outputs = [
-                        pickle.loads(chan.begin_read())
-                        for chan in output_channels
-                    ]
+                    ray_worker_outputs = output_channels.begin_read()
                 finally:
                     # Has to call end_read in order to reuse the DAG.
-                    for chan in output_channels:
-                        chan.end_read()
+                    output_channels.end_read()
             else:
                 ray_worker_outputs = ray.get(ray_worker_outputs)
 
-        return [driver_worker_output] + ray_worker_outputs
+        return driver_worker_output + ray_worker_outputs
 
-    def _compiled_ray_dag(self):
+    def _compiled_ray_dag(self, use_broadcast):
         import pkg_resources
         required_version = "2.9"
         current_version = pkg_resources.get_distribution("ray").version
@@ -274,14 +297,22 @@ class RayGPUExecutor(DistributedGPUExecutor):
         from ray.dag import InputNode, MultiOutputNode
         assert self.parallel_config.distributed_executor_backend == "ray"
 
-        # Right now, compiled DAG requires at least 1 arg. We send
-        # a dummy value for now. It will be fixed soon.
-        with InputNode() as input_data:
-            forward_dag = MultiOutputNode([
-                worker.execute_model_compiled_dag_remote.
-                bind(  # type: ignore[attr-defined]
-                    input_data) for worker in self.workers
-            ])
+        if use_broadcast:
+            with InputNode() as input_data:
+                from ray.experimental.channel.torch_tensor_type import TorchTensorType
+                forward_dag = MultiOutputNode([
+                    worker.execute_model_compiled_dag_spmd_remote.bind(
+                        input_data) for worker in [self.driver_dummy_worker] + self.workers
+                    ])
+        else:
+            # Right now, compiled DAG requires at least 1 arg. We send
+            # a dummy value for now. It will be fixed soon.
+            with InputNode() as input_data:
+                forward_dag = MultiOutputNode([
+                    worker.execute_model_compiled_dag_remote.
+                    bind(  # type: ignore[attr-defined]
+                        input_data) for worker in self.workers
+                ])
         return forward_dag.experimental_compile()
 
     def check_health(self) -> None:

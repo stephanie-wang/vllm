@@ -95,7 +95,11 @@ class Worker(WorkerBase):
             None for _ in range(parallel_config.pipeline_parallel_size)
         ]
 
-    def init_device(self) -> None:
+    def init_device(self, device_str=None) -> None:
+        if device_str is not None:
+            self.device = torch.device("cpu")
+            return
+
         if self.device_config.device.type == "cuda":
             # torch.distributed.all_reduce does not free the input tensor until
             # the synchronization point. This causes the memory usage to grow
@@ -235,65 +239,64 @@ class Worker(WorkerBase):
             self.cache_engine[virtual_engine].copy(blocks_to_copy)
 
     @torch.inference_mode()
-    def execute_model(
+    def prepare_execute_model_args(
         self,
         execute_model_req: Optional[ExecuteModelRequest] = None
-    ) -> List[Union[SamplerOutput, PoolerOutput]]:
-
-        if execute_model_req is None:
-            seq_group_metadata_list = None
-        else:
-            seq_group_metadata_list = execute_model_req.seq_group_metadata_list
+    ) -> Dict[str, Any]:
+        seq_group_metadata_list = execute_model_req.seq_group_metadata_list
+        virtual_engine = execute_model_req.virtual_engine
 
         blocks_to_swap_in: torch.Tensor
         blocks_to_swap_out: torch.Tensor
         blocks_to_copy: torch.Tensor
-        if execute_model_req is None:
-            virtual_engine = 0
-        else:
-            virtual_engine = execute_model_req.virtual_engine
 
-        src_rank, tp_group, cpu_tp_group = get_tp_src_rank_and_group()
-        if self.is_driver_worker:
-            assert seq_group_metadata_list is not None, (src_rank, tp_group)
-            assert execute_model_req is not None
-            num_seq_groups = len(seq_group_metadata_list)
-            # `blocks_to_swap_in` and `blocks_to_swap_out` are cpu tensors.
-            # they contain parameters to launch cudamemcpyasync.
-            blocks_to_swap_in = torch.tensor(
-                execute_model_req.blocks_to_swap_in,
-                device="cpu",
-                dtype=torch.int64).view(-1, 2)
-            blocks_to_swap_out = torch.tensor(
-                execute_model_req.blocks_to_swap_out,
-                device="cpu",
-                dtype=torch.int64).view(-1, 2)
-            # `blocks_to_copy` is a gpu tensor. The src and tgt of
-            # blocks to copy are in the same device, and `blocks_to_copy`
-            # can be used directly within cuda kernels.
-            blocks_to_copy = torch.tensor(execute_model_req.blocks_to_copy,
-                                          device=self.device,
-                                          dtype=torch.int64).view(-1, 2)
-            data: Dict[str, Any] = {
-                "num_seq_groups": num_seq_groups,
-                "virtual_engine": virtual_engine,
-                "blocks_to_swap_in": blocks_to_swap_in,
-                "blocks_to_swap_out": blocks_to_swap_out,
-                "blocks_to_copy": blocks_to_copy,
-            }
-            broadcast_tensor_dict(data,
-                                  src=src_rank,
-                                  group=tp_group,
-                                  metadata_group=cpu_tp_group)
-        else:
-            data = broadcast_tensor_dict(src=src_rank,
-                                         group=tp_group,
-                                         metadata_group=cpu_tp_group)
-            num_seq_groups = data["num_seq_groups"]
-            virtual_engine = data["virtual_engine"]
-            blocks_to_swap_in = data["blocks_to_swap_in"]
-            blocks_to_swap_out = data["blocks_to_swap_out"]
-            blocks_to_copy = data["blocks_to_copy"]
+        assert seq_group_metadata_list is not None
+        assert execute_model_req is not None
+        num_seq_groups = len(seq_group_metadata_list)
+        # `blocks_to_swap_in` and `blocks_to_swap_out` are cpu tensors.
+        # they contain parameters to launch cudamemcpyasync.
+        blocks_to_swap_in = torch.tensor(
+            execute_model_req.blocks_to_swap_in,
+            device="cpu",
+            dtype=torch.int64).view(-1, 2)
+        blocks_to_swap_out = torch.tensor(
+            execute_model_req.blocks_to_swap_out,
+            device="cpu",
+            dtype=torch.int64).view(-1, 2)
+        # `blocks_to_copy` is a gpu tensor. The src and tgt of
+        # blocks to copy are in the same device, and `blocks_to_copy`
+        # can be used directly within cuda kernels.
+        blocks_to_copy = torch.tensor(execute_model_req.blocks_to_copy,
+                                      device=self.device,
+                                      dtype=torch.int64).view(-1, 2)
+        data: Dict[str, Any] = {
+            "num_seq_groups": num_seq_groups,
+            "virtual_engine": virtual_engine,
+            "blocks_to_swap_in": blocks_to_swap_in,
+            "blocks_to_swap_out": blocks_to_swap_out,
+            "blocks_to_copy": blocks_to_copy,
+        }
+
+        sampling_metadata, metadata_dict = self.model_runner.prepare_input_tensors_on_driver(seq_group_metadata_list)
+
+        return data, sampling_metadata, metadata_dict
+
+    @torch.inference_mode()
+    def execute_model_with_prepared_args(
+        self,
+        data: Dict[str, Any],
+        sampling_metadata: Optional["SamplingMetadata"],
+        metadata_dict,
+    ) -> List[Union[SamplerOutput, PoolerOutput]]:
+        blocks_to_swap_in: torch.Tensor
+        blocks_to_swap_out: torch.Tensor
+        blocks_to_copy: torch.Tensor
+
+        num_seq_groups = data["num_seq_groups"]
+        virtual_engine = data["virtual_engine"]
+        blocks_to_swap_in = data["blocks_to_swap_in"]
+        blocks_to_swap_out = data["blocks_to_swap_out"]
+        blocks_to_copy = data["blocks_to_copy"]
 
         self.cache_swap(virtual_engine, blocks_to_swap_in, blocks_to_swap_out,
                         blocks_to_copy)
@@ -302,9 +305,9 @@ class Worker(WorkerBase):
         if num_seq_groups == 0:
             return []
 
-        output = self.model_runner.execute_model(
-            seq_group_metadata_list, self.gpu_cache[virtual_engine],
-            virtual_engine)
+        args = self.model_runner.prepare_input_tensors_on_worker(sampling_metadata, metadata_dict)
+        output = self.model_runner._execute_model(self.gpu_cache[virtual_engine],
+                *args, virtual_engine)
 
         if is_pipeline_model_parallel_last_rank():
             # This is the last rank, return the actual result.
@@ -315,6 +318,39 @@ class Worker(WorkerBase):
         # If we are not the last rank, return the request metadata
         # for the next rank to execute.
         return (execute_model_req, )
+
+    @torch.inference_mode()
+    def execute_model(
+        self,
+        execute_model_req: Optional[ExecuteModelRequest] = None
+    ) -> List[Union[SamplerOutput, PoolerOutput]]:
+
+        sampling_metadata = None
+        src_rank, tp_group, cpu_tp_group = get_tp_src_rank_and_group()
+        if self.is_driver_worker:
+            assert execute_model_req is not None
+            data, sampling_metadata, metadata_dict = self.prepare_execute_model_args(execute_model_req)
+            broadcast_tensor_dict(data,
+                                  src=src_rank,
+                                  group=tp_group,
+                                  metadata_group=cpu_tp_group)
+            broadcast_tensor_dict(metadata_dict,
+                                  src=src_rank,
+                                  group=tp_group,
+                                  metadata_group=cpu_tp_group)
+
+        else:
+            data = broadcast_tensor_dict(src=0,
+                                         group=tp_group,
+                                         metadata_group=cpu_tp_group)
+            metadata_dict = broadcast_tensor_dict(src=0,
+                                                  group=tp_group,
+                                                  metadata_group=cpu_tp_group)
+
+        return self.execute_model_with_prepared_args(
+                data,
+                sampling_metadata,
+                metadata_dict)
 
     def add_lora(self, lora_request: LoRARequest) -> bool:
         return self.model_runner.add_lora(lora_request)

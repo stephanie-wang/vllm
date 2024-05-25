@@ -38,9 +38,34 @@ try:
                 torch.cuda.set_device(self.worker.device)
                 self.compiled_dag_cuda_device_set = True
 
-            output = self.worker.execute_model()
-            output = pickle.dumps(output)
-            return output
+            return self.worker.execute_model()
+
+        def prepare_execute_model_args_compiled_dag_remote(self, execute_model_req):
+            import torch
+            if not self.compiled_dag_cuda_device_set:
+                torch.cuda.set_device(self.worker.device)
+                self.compiled_dag_cuda_device_set = True
+
+            return self.worker.prepare_execute_model_args(execute_model_req)
+
+        def execute_model_with_prepared_args_compiled_dag_remote(self, prepared_args):
+            import torch
+            if not self.compiled_dag_cuda_device_set:
+                torch.cuda.set_device(self.worker.device)
+                self.compiled_dag_cuda_device_set = True
+
+            prepared_args = self.worker.prepare_execute_model_args(prepared_args)
+            return self.worker.execute_model_with_prepared_args(*prepared_args)
+
+        def execute_model_compiled_dag_spmd_remote(self, execute_model_req: "ExecuteModelRequest"):
+            import torch
+            if not self.compiled_dag_cuda_device_set:
+                torch.cuda.set_device(self.worker.device)
+                self.compiled_dag_cuda_device_set = True
+
+            prepared_args = self.worker.prepare_execute_model_args(execute_model_req)
+            return self.worker.execute_model_with_prepared_args(*prepared_args)
+
 
         def execute_model_compiled_dag_pipelined_remote(self, args):
             """Used only when compiled DAG is enabled."""
