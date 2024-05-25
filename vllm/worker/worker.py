@@ -308,16 +308,9 @@ class Worker(WorkerBase):
         args = self.model_runner.prepare_input_tensors_on_worker(sampling_metadata, metadata_dict)
         output = self.model_runner._execute_model(self.gpu_cache[virtual_engine],
                 *args, virtual_engine)
-
-        if is_pipeline_model_parallel_last_rank():
-            # This is the last rank, return the actual result.
-            # Worker only supports single-step execution. Wrap the output in a list
-            # to conform to interface.
-            return [output]
-
-        # If we are not the last rank, return the request metadata
-        # for the next rank to execute.
-        return (execute_model_req, )
+        # Worker only supports single-step execution. Wrap the output in a list
+        # to conform to interface.
+        return [output]
 
     @torch.inference_mode()
     def execute_model(
@@ -347,10 +340,19 @@ class Worker(WorkerBase):
                                                   group=tp_group,
                                                   metadata_group=cpu_tp_group)
 
-        return self.execute_model_with_prepared_args(
+
+        output = self.execute_model_with_prepared_args(
                 data,
                 sampling_metadata,
                 metadata_dict)
+
+        if is_pipeline_model_parallel_last_rank():
+            # This is the last rank, return the actual result.
+            return output
+
+        # If we are not the last rank, return the request metadata
+        # for the next rank to execute.
+        return (execute_model_req, )
 
     def add_lora(self, lora_request: LoRARequest) -> bool:
         return self.model_runner.add_lora(lora_request)
