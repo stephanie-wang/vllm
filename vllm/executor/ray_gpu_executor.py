@@ -24,7 +24,7 @@ logger = init_logger(__name__)
 
 USE_RAY_COMPILED_DAG = envs.VLLM_USE_RAY_COMPILED_DAG
 # The driver dummy worker participates as an equal worker in the DAG.
-USE_RAY_COMPILED_DAG_FOR_SPMD = envs.VLLM_USE_RAY_COMPILED_DAG_FOR_SPMD
+USE_RAY_DUMMY_DRIVER_WORKER = envs.VLLM_USE_RAY_COMPILED_DAG_FOR_SPMD
 
 
 class RayGPUExecutor(DistributedGPUExecutor):
@@ -42,8 +42,6 @@ class RayGPUExecutor(DistributedGPUExecutor):
         self._init_workers_ray(placement_group)
 
         self.forward_dag = None
-        if USE_RAY_COMPILED_DAG:
-            self.forward_dag = self._compiled_ray_dag(USE_RAY_COMPILED_DAG_FOR_SPMD)
 
     def _configure_ray_workers_use_nsight(self,
                                           ray_remote_kwargs) -> Dict[str, Any]:
@@ -172,7 +170,7 @@ class RayGPUExecutor(DistributedGPUExecutor):
 
         self._run_workers("init_device")
 
-        if USE_RAY_COMPILED_DAG_FOR_SPMD:
+        if USE_RAY_DUMMY_DRIVER_WORKER:
             self.driver_worker.execute_method(
                 "init_worker", **init_worker_all_kwargs[0])
             self.driver_worker.execute_method(
@@ -217,13 +215,13 @@ class RayGPUExecutor(DistributedGPUExecutor):
           individually
         """
         if use_ray_compiled_dag:
-            if USE_RAY_COMPILED_DAG_FOR_SPMD:
+            if USE_RAY_DUMMY_DRIVER_WORKER:
                 # Ray DAG already includes the task for the dummy driver
                 # worker.
                 use_dummy_driver = False
                 # The physical driver does not participate either.
                 use_local_driver = False
-        elif USE_RAY_COMPILED_DAG_FOR_SPMD:
+        elif USE_RAY_DUMMY_DRIVER_WORKER:
             # Worker setup: Whatever is normally executed on the local driver
             # should instead be executed on the "dummy" driver worker.
             if use_local_driver:
@@ -246,8 +244,10 @@ class RayGPUExecutor(DistributedGPUExecutor):
             else islice(all_kwargs, 1, None)
 
         if use_ray_compiled_dag:
-            assert self.forward_dag is not None
-            if USE_RAY_COMPILED_DAG_FOR_SPMD:
+            if self.forward_dag is None:
+                self.forward_dag = self._compiled_ray_dag(USE_RAY_DUMMY_DRIVER_WORKER)
+
+            if USE_RAY_DUMMY_DRIVER_WORKER:
                 output_channels = self.forward_dag.execute(driver_kwargs.pop("execute_model_req"))
             else:
                 # Right now, compiled DAG can only accept a single
@@ -286,7 +286,7 @@ class RayGPUExecutor(DistributedGPUExecutor):
 
         return driver_worker_output + ray_worker_outputs
 
-    def _compiled_ray_dag(self, use_broadcast):
+    def _compiled_ray_dag(self, use_dummy_driver_worker):
         import pkg_resources
         required_version = "2.9"
         current_version = pkg_resources.get_distribution("ray").version
@@ -297,7 +297,7 @@ class RayGPUExecutor(DistributedGPUExecutor):
         from ray.dag import InputNode, MultiOutputNode
         assert self.parallel_config.distributed_executor_backend == "ray"
 
-        if use_broadcast:
+        if use_dummy_driver_worker:
             with InputNode() as input_data:
                 from ray.experimental.channel.torch_tensor_type import TorchTensorType
                 forward_dag = MultiOutputNode([
@@ -336,16 +336,17 @@ class RayGPUExecutor(DistributedGPUExecutor):
 class RayGPUExecutorAsync(RayGPUExecutor, DistributedGPUExecutorAsync):
 
     def __init__(self, *args, **kwargs):
+        if USE_RAY_COMPILED_DAG:
+            global USE_RAY_DUMMY_DRIVER_WORKER
+            USE_RAY_DUMMY_DRIVER_WORKER = True
+
         super().__init__(*args, **kwargs)
         if USE_RAY_COMPILED_DAG:
             self.driver_executor = self.driver_dummy_worker.execute_method.remote
         else:
             self.driver_executor = make_async(self.driver_worker.execute_method)
 
-    def _compiled_ray_dag(self):
-        return None
-
-    def _build_compiled_ray_dag(self):
+    def _compiled_ray_dag(self, use_dummy_driver_worker=True):
         import pkg_resources
         required_version = "2.9"
         current_version = pkg_resources.get_distribution("ray").version
@@ -382,7 +383,7 @@ class RayGPUExecutorAsync(RayGPUExecutor, DistributedGPUExecutorAsync):
 
         if use_ray_compiled_dag:
             if self.forward_dag is None:
-                self.forward_dag = self._build_compiled_ray_dag()
+                self.forward_dag = self._compiled_ray_dag()
             return [await self.forward_dag.execute_async(driver_args)]
 
         for pp_rank in range(self.parallel_config.pipeline_parallel_size):
