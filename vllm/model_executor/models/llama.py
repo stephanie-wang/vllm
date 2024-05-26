@@ -299,21 +299,17 @@ class LlamaModel(nn.Module):
         kv_caches: List[torch.Tensor],
         attn_metadata: AttentionMetadata,
         inputs_embeds: Optional[torch.Tensor] = None,
+        prev_layer_hidden_states = None,
     ) -> torch.Tensor:
-        if is_pipeline_model_parallel_first_rank():
+        if prev_layer_hidden_states is not None:
+            hidden_states, residual = prev_layer_hidden_states
+        else:
+            #assert is_pipeline_model_parallel_first_rank()
             if inputs_embeds is not None:
                 hidden_states = inputs_embeds
             else:
                 hidden_states = self.get_input_embeddings(input_ids)
             residual = None
-        else:
-            if inputs_embeds is not None:
-                sizes = list(inputs_embeds.size())
-            else:
-                sizes = list(input_ids.size()) + [self.config.hidden_size]
-            hidden_states, residual = recv_prev_rank(
-                2, torch.Size(sizes), self.embed_tokens.weight.dtype,
-                self.embed_tokens.weight.device)
 
         for i in range(self.start_layer, self.end_layer):
             layer = self.layers[i]
@@ -327,9 +323,9 @@ class LlamaModel(nn.Module):
 
         if is_pipeline_model_parallel_last_rank():
             hidden_states, _ = self.norm(hidden_states, residual)
-        else:
-            send_next_rank([hidden_states, residual])
-        return hidden_states
+            residual = None
+
+        return hidden_states, residual
 
 
 class LlamaForCausalLM(nn.Module):

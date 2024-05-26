@@ -355,12 +355,18 @@ class RayGPUExecutorAsync(RayGPUExecutor, DistributedGPUExecutorAsync):
                              f"required, but found {current_version}")
 
         from ray.dag import InputNode, MultiOutputNode
+        from ray.experimental.channel.torch_tensor_type import TorchTensorType
+
         assert self.parallel_config.tensor_parallel_size == 1
 
         with InputNode() as input_data:
             forward_dag = input_data
-            for worker in [self.driver_dummy_worker] + self.workers:
-                forward_dag = worker.execute_model_compiled_dag_pipelined_remote.bind(forward_dag)
+            for i, worker in enumerate([self.driver_dummy_worker] + self.workers):
+                forward_dag = worker.execute_model_compiled_dag_pipelined_p2p_remote.bind(forward_dag)
+                # All workers except the last one will output some tensor data
+                # that should be transferred p2p.
+                if i < len(self.workers):
+                    forward_dag = forward_dag.with_type_hint(TorchTensorType(transport="nccl"))
 
         return forward_dag.experimental_compile(enable_asyncio=True)
 
@@ -384,7 +390,7 @@ class RayGPUExecutorAsync(RayGPUExecutor, DistributedGPUExecutorAsync):
         if use_ray_compiled_dag:
             if self.forward_dag is None:
                 self.forward_dag = self._compiled_ray_dag()
-            return [await self.forward_dag.execute_async(driver_args)]
+            return [await self.forward_dag.execute_async((*driver_args, None))]
 
         for pp_rank in range(self.parallel_config.pipeline_parallel_size):
             coros = []

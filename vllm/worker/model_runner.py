@@ -703,6 +703,7 @@ class ModelRunner:
         seq_group_metadata_list: List[SequenceGroupMetadata],
         kv_caches: List[torch.Tensor],
         virtual_engine: int = 0,
+        prev_layer_hidden_states = None,
     ) -> Optional[SamplerOutput]:
         args = self.prepare_input_tensors(seq_group_metadata_list)
         return self._execute_model(kv_caches, *args)
@@ -714,6 +715,7 @@ class ModelRunner:
         input_tokens, input_positions, attn_metadata, sampling_metadata,
         lora_requests, lora_mapping, multi_modal_input,
         virtual_engine: int = 0,
+        prev_layer_hidden_states = None,
     ) -> Optional[SamplerOutput]:
         if self.lora_config:
             self.set_active_loras(lora_requests, lora_mapping)
@@ -735,14 +737,15 @@ class ModelRunner:
         }
         if self.vision_language_config:
             execute_model_kwargs.update({"image_input": multi_modal_input})
-        hidden_states = model_executable(**execute_model_kwargs)
+        hidden_states, residual = model_executable(**execute_model_kwargs)
 
         # Compute the logits in the last pipeline stage.
         if is_pipeline_model_parallel_last_rank():
             logits = self.model.compute_logits(hidden_states,
                                                sampling_metadata)
         else:
-            return None
+            #return None
+            return hidden_states, residual
 
         # Only perform sampling in the first TP worker.
         if not self.is_driver_worker:

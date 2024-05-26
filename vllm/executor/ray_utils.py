@@ -1,10 +1,16 @@
 import pickle
 from typing import List, Optional, Tuple
+import time
 
 from vllm.config import ParallelConfig
 from vllm.logger import init_logger
 from vllm.utils import get_ip, is_hip
 from vllm.worker.worker_base import WorkerWrapperBase
+
+from vllm.distributed import (
+        get_pipeline_model_parallel_rank,
+        is_pipeline_model_parallel_last_rank,
+        )
 
 logger = init_logger(__name__)
 
@@ -76,6 +82,26 @@ try:
 
             output = self.worker.execute_model(*args)
             return output
+
+        def execute_model_compiled_dag_pipelined_p2p_remote(self, args):
+            """Used only when compiled DAG is enabled."""
+            import torch
+            if not self.compiled_dag_cuda_device_set:
+                torch.cuda.set_device(self.worker.device)
+                self.compiled_dag_cuda_device_set = True
+
+            execute_model_req, prev_layer_hidden_states = args
+            #start = time.perf_counter()
+            prepared_args = self.worker.prepare_execute_model_args(execute_model_req)
+            #end = time.perf_counter()
+            #print("prepare args", (end - start) * 1000)
+
+            output = self.worker.execute_model_with_prepared_args(*prepared_args, prev_layer_hidden_states=prev_layer_hidden_states)
+
+            if is_pipeline_model_parallel_last_rank():
+                return output
+
+            return execute_model_req, output[0]
 
 except ImportError as e:
     logger.warning(

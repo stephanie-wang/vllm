@@ -287,6 +287,7 @@ class Worker(WorkerBase):
         data: Dict[str, Any],
         sampling_metadata: Optional["SamplingMetadata"],
         metadata_dict,
+        prev_layer_hidden_states = None,
     ) -> List[Union[SamplerOutput, PoolerOutput]]:
         blocks_to_swap_in: torch.Tensor
         blocks_to_swap_out: torch.Tensor
@@ -307,7 +308,9 @@ class Worker(WorkerBase):
 
         args = self.model_runner.prepare_input_tensors_on_worker(sampling_metadata, metadata_dict)
         output = self.model_runner._execute_model(self.gpu_cache[virtual_engine],
-                *args, virtual_engine)
+                *args,
+                virtual_engine=virtual_engine,
+                prev_layer_hidden_states=prev_layer_hidden_states)
         # Worker only supports single-step execution. Wrap the output in a list
         # to conform to interface.
         return [output]
