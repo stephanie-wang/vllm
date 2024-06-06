@@ -276,15 +276,15 @@ class Worker(WorkerBase):
         # to conform to interface.
         return [output]
 
-    @torch.inference_mode()
-    def start_worker_execution_loop(self) -> None:
-        """Execute model loop in parallel worker.
+    #@torch.inference_mode()
+    #def start_worker_execution_loop(self) -> None:
+    #    """Execute model loop in parallel worker.
 
-        You can stop the loop by executing a driver worker with an empty output.
-        See `stop_remote_worker_execution_loop` for more details.
-        """
-        while self._execute_model_non_driver():
-            pass
+    #    You can stop the loop by executing a driver worker with an empty output.
+    #    See `stop_remote_worker_execution_loop` for more details.
+    #    """
+    #    while self._execute_model_non_driver():
+    #        pass
 
     def _execute_model_non_driver(self) -> bool:
         """Execute model in parallel worker.

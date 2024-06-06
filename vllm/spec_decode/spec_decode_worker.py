@@ -239,6 +239,14 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
     ) -> List[SamplerOutput]:
         """Perform speculative decoding on the input batch.
         """
+        # Broadcast initial execute_model_req before this function.
+        # This method should now take a ModelInput.
+
+        # All workers run below code, including driver.
+        # NOTE: When spec enabled, each worker must now pass proposer's outputs
+        # to scorer. This should be possible?
+        # self._run(model_input.num_lookahead_slots)
+
         if self.rank != self._driver_rank:
             self._run_non_driver_rank()
             return []

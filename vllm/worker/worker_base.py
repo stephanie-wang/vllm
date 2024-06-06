@@ -46,11 +46,29 @@ class WorkerBase(ABC):
         """
         raise NotImplementedError
 
+    @property
+    def model_inputs_transport(self):
+        raise NotImplementedError
+
+    @torch.inference_mode()
+    def start_worker_execution_loop(self) -> None:
+        """Execute model loop in parallel worker.
+
+        You can stop the loop by executing a driver worker with an empty output.
+        See `stop_remote_worker_execution_loop` for more details.
+        """
+        while True:
+            model_input = self.model_inputs_transport.receive_model_inputs(self, execute_model_req)
+
+            if model_input is None:
+                return
+
+            return self.execute_model(model_input)
+
     @abstractmethod
     def execute_model(
-        self,
-        execute_model_req: Optional[ExecuteModelRequest] = None
-    ) -> List[SamplerOutput]:
+            self,
+            model_input: ModelInput) -> List[SamplerOutput]:
         """Executes at least one model step on the given sequences, unless no
         sequences are provided."""
         raise NotImplementedError
