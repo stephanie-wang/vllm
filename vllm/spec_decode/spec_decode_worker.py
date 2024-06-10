@@ -232,6 +232,35 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         self.proposer_worker.initialize_cache(num_gpu_blocks=num_gpu_blocks,
                                               num_cpu_blocks=num_cpu_blocks)
 
+    def prepare_model_input_local(
+            self,
+            execute_model_req: ExecuteModelRequest) -> ModelInput:
+        assert execute_model_req.seq_group_metadata_list is not None, (
+            "speculative decoding requires non-None seq_group_metadata_list")
+
+        model_input = ModelInput(
+            num_lookahead_slots=execute_model_req.num_lookahead_slots,
+            running_queue_size=execute_model_req.running_queue_size,
+                )
+
+    @torch.inference_mode()
+    def prepare_model_input(
+        self,
+        execute_model_req: Optional[ExecuteModelRequest] = None
+    ) -> ModelInput:
+        if self.rank == self._driver_rank:
+            if execute_model_req is None:
+                # This signals that there's no more requests to process for now.
+                # All workers are running infinite loop with broadcast_tensor_dict,
+                # and it stops the loop when the driver broadcasts an empty input.
+                # Send an empty input to notify all other workers to stop their
+                # execution loop.
+                broadcast_tensor_dict({}, src=0)
+                return None
+
+
+        pass
+
     @torch.inference_mode()
     def execute_model(
         self,
@@ -239,6 +268,19 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
     ) -> List[SamplerOutput]:
         """Perform speculative decoding on the input batch.
         """
+        # TODO: Broadcast initial execute_model_req before this function.
+        # This method should now take a ModelInput.
+
+        # All workers run below code, including driver.
+        # NOTE: When spec enabled, each worker must now pass proposer's outputs
+        # to scorer. This should be possible?
+        # - TODO: Run sampling on all workers
+        # - Cade says there might be bugs - if it doesn't work it's probably
+        # because of some random state issue
+        # self._run(model_input.num_lookahead_slots)
+        # - Docs should specify that execute_model must be stateless and should
+        # not do communication (maybe disable comm ops?)
+
         if self.rank != self._driver_rank:
             self._run_non_driver_rank()
             return []
@@ -351,23 +393,48 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
 
         Returns True iff there are remaining sequences to process.
         """
-        assert self.rank != self._driver_rank
+        # Communication with workers.
+        # rank 0 worker: execute_model_req -> broadcast -> execute_model_req
+        # all other workers: None -> broadcast -> execute_model_req
+        execute_model_req = self.proposer_worker.prepare_model_input(execute_model_req)
 
-        data = broadcast_tensor_dict(src=self._driver_rank)
-        if not data:
-            return False
-        num_lookahead_slots = data["num_lookahead_slots"]
+        # original: execute_model_req -> ModelInput -> ncclBroadcast -> ModelInput
+        # new: execute_model_req -> ncclBroadcast -> execute_model_req
 
-        # Even if num_lookahead_slots is zero, we want to run the proposer model
-        # as it may have KV.
-        #
-        # We run the proposer once per lookahead slot. In the future we should
-        # delegate how many times it runs to the proposer.
-        for _ in range(max(num_lookahead_slots, 1)):
-            self.proposer_worker.execute_model()
+        # ExecuteModelRequest: CPU
+        # ExecuteModelRequest: CPU+GPU
 
-        self.scorer_worker.execute_model()
-        return True
+
+        for _ in range(max(model_input.num_lookahead_slots, 1)):
+            model_input = self.proposer_worker.prepare_model_input(execute_model_req)
+            step_output = self.proposer_worker.execute_model(model_input)
+            #self.proposer_worker.append(execute_model_req, step_output)
+
+        model_input = self.scorer_worker.prepare_model_input(execute_model_req)
+        self.scorer_worker.execute_model(execute_model_req)
+
+
+        # Options:
+        # 1. Use above loop.
+        # 2. Allow adding a token and splitting by proposal len for ModelInput
+        # in addition to ExecuteModelRequest.
+        # 3. Convert from ModelInput to ExecuteModelRequest.
+
+        #data = broadcast_tensor_dict(src=self._driver_rank)
+        #if not data:
+        #    return False
+        #num_lookahead_slots = data["num_lookahead_slots"]
+
+        ## Even if num_lookahead_slots is zero, we want to run the proposer model
+        ## as it may have KV.
+        ##
+        ## We run the proposer once per lookahead slot. In the future we should
+        ## delegate how many times it runs to the proposer.
+        #for _ in range(max(model_input.num_lookahead_slots, 1)):
+        #    self.proposer_worker.execute_model(model_input)
+
+        #self.scorer_worker.execute_model()
+        #return True
 
     @nvtx_range("spec_decode_worker._run_speculative_decoding_step")
     def _run_speculative_decoding_step(

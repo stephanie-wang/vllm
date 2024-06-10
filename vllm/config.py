@@ -607,7 +607,7 @@ class ParallelConfig:
         if self.distributed_executor_backend is None and self.world_size > 1:
             from vllm.executor import ray_utils
             ray_found = ray_utils.ray is not None
-            self.distributed_executor_backend = "ray" if ray_found else "mp"
+            self.distributed_executor_backend = "ray" if ray_found else "ray"
 
         self._verify_args()
 

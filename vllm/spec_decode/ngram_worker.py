@@ -44,6 +44,29 @@ class NGramWorker(NonLLMProposerWorkerBase, LoraNotSupportedWorkerBase):
             vocab_size=self.vocab_size,
         )
 
+    def prepare_model_input_local(
+            self,
+            execute_model_req: ExecuteModelRequest,
+            ) -> ModelInput:
+        input_tokens = []
+        input_positions = []
+        for seq_group_metadata in seq_group_metadata_list:
+            seq_ids = list(seq_group_metadata.seq_data.keys())
+            for seq_id in seq_ids:
+                tokens = seq_data.get_token_ids()
+                input_tokens.extend(tokens)
+                input_positions.extend(list(range(len(tokens))))
+        input_tokens_tensor = torch.tensor(input_tokens,
+                                           dtype=torch.long,
+                                           device=self.device)
+        input_positions_tensor = torch.tensor(input_positions,
+                                              dtype=torch.long,
+                                              device=self.device)
+        return ModelInpu(
+            input_tokens=input_tokens_tensor,
+            input_positions=input_positions_tensor,
+                )
+
     def sampler_output(
         self,
         execute_model_req: ExecuteModelRequest,
