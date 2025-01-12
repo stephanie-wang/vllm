@@ -42,15 +42,15 @@ class RayGPUExecutor(DistributedGPUExecutor):
         # be executed in a remote Ray worker. Currently this requires
         # USE_RAY_COMPILED_DAG=True.
         self.use_ray_spmd_worker = envs.VLLM_USE_RAY_SPMD_WORKER
-        if self.use_ray_compiled_dag:
-            assert self.use_ray_spmd_worker, (
-                "VLLM_USE_RAY_COMPILED_DAG=1 requires "
-                "VLLM_USE_RAY_SPMD_WORKER=1")
-        if self.use_ray_spmd_worker:
-            # TODO: Support SPMD worker for non-DAG Ray executor.
-            assert self.use_ray_compiled_dag, (
-                "VLLM_USE_RAY_SPMD_WORKER=1 requires "
-                "VLLM_USE_RAY_COMPILED_DAG=1")
+        #if self.use_ray_compiled_dag:
+        #    assert self.use_ray_spmd_worker, (
+        #        "VLLM_USE_RAY_COMPILED_DAG=1 requires "
+        #        "VLLM_USE_RAY_SPMD_WORKER=1")
+        #if self.use_ray_spmd_worker:
+        #    # TODO: Support SPMD worker for non-DAG Ray executor.
+        #    assert self.use_ray_compiled_dag, (
+        #        "VLLM_USE_RAY_SPMD_WORKER=1 requires "
+        #        "VLLM_USE_RAY_COMPILED_DAG=1")
 
         assert self.uses_ray
         placement_group = self.parallel_config.placement_group
@@ -489,10 +489,13 @@ class RayGPUExecutor(DistributedGPUExecutor):
 
             forward_dag = MultiOutputNode(outputs)
 
-        return forward_dag.experimental_compile(
-            enable_asyncio=enable_asyncio,
-            _overlap_gpu_communication=envs.
-            VLLM_USE_RAY_COMPILED_DAG_OVERLAP_COMM)
+        if self.use_ray_compiled_dag:
+            forward_dag = forward_dag.experimental_compile(
+                enable_asyncio=enable_asyncio,
+                _overlap_gpu_communication=envs.
+                VLLM_USE_RAY_COMPILED_DAG_OVERLAP_COMM)
+
+        return forward_dag
 
     def __del__(self):
         self.shutdown()
@@ -504,7 +507,7 @@ class RayGPUExecutorAsync(RayGPUExecutor, DistributedGPUExecutorAsync):
         super().__init__(*args, **kwargs)
         self.pp_locks: Optional[List[asyncio.Lock]] = None
         self.use_ray_spmd_worker = envs.VLLM_USE_RAY_SPMD_WORKER
-        if not self.use_ray_compiled_dag:
+        if not self.use_ray_spmd_worker:
             self.driver_exec_method = make_async(
                 self.driver_worker.execute_method)
 
@@ -518,7 +521,10 @@ class RayGPUExecutorAsync(RayGPUExecutor, DistributedGPUExecutorAsync):
             self.forward_dag = self._compiled_ray_dag(enable_asyncio=True)
 
         serialized_data = self.input_encoder.encode(execute_model_req)
-        dag_future = await self.forward_dag.execute_async(serialized_data)
+        if self.use_ray_compiled_dag:
+            dag_future = await self.forward_dag.execute_async(serialized_data)
+        else:
+            dag_future = self.forward_dag.execute(serialized_data)
         output = await dag_future[0]
         return self.output_decoder.decode(output)
 

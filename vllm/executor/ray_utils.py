@@ -79,6 +79,14 @@ try:
                 torch.cuda.set_device(self.worker.device)
                 self.compiled_dag_cuda_device_set = True
 
+                from ray.experimental.channel.torch_tensor_type import TorchTensorType
+                TorchTensorType().register_custom_serializer()
+                print("REGISTERED SERIALIZER")
+                from ray.experimental.channel import ChannelContext
+                import torch
+                ctx = ChannelContext.get_current()
+                print("CHANNEL CONTEXT DEVICE", ctx.torch_device, "VLLM DEVICE", torch.get_default_device())
+
             output = self.worker._execute_model_spmd(execute_model_req,
                                                      intermediate_tensors)
             # Pipeline model request and output to the next pipeline stage.
@@ -243,7 +251,8 @@ def initialize_ray_cluster(
                      ignore_reinit_error=True,
                      num_gpus=parallel_config.world_size)
     else:
-        ray.init(address=ray_address, ignore_reinit_error=True)
+        ray.init(address=ray_address, ignore_reinit_error=True,
+                 runtime_env={"excludes": ["."]})
 
     if parallel_config.placement_group:
         # Placement group is already set.
